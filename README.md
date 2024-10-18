@@ -85,7 +85,3 @@ The application uses a `config.py` file to manage configuration. This file loads
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Contact
-
-Your Name - kelvinlokko17@gmail.com
