@@ -1,122 +1,102 @@
 from flask import Flask, jsonify
-import requests
-from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
-import logging
-from config import Config
+import mysql.connector
+from mysql.connector import Error
 
 app = Flask(__name__)
-CORS(app)
 
-# Load configuration
-app.config.from_object(Config)
-
-# Database configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = (
-    f"postgresql://{Config.DB_USERNAME}:{Config.DB_PASSWORD}@"
-    f"{Config.DB_HOST}:{Config.DB_PORT}/{Config.DB_NAME}"
-)
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-db = SQLAlchemy(app)
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Helper function to query Kedebah API
-def query_kedebah_api(endpoint):
-    headers = {'Authorization': f'Bearer {Config.API_KEY}'}
-    url = f"{Config.KEDEBAH_API_URL}/{endpoint}"
+# Function to establish database connection
+def create_connection():
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error querying Kedebah API: {str(e)}")
-        return {'error': str(e)}
+        connection = mysql.connector.connect(
+            host='95.217.63.56',
+            database='business_kedebah',
+            user='kedebahBusinessUser',
+            password='n3wKedebahuSer!',
+            port='1632',
+        )
+        if connection.is_connected():
+            print("Connected to MySQL database")
+        return connection
+    except Error as e:
+        print(f"Error connecting to MySQL: {e}")
+        return None
 
-# Helper function to query Ticketing Tool API
-def query_ticketing_tool_api(endpoint):
-    headers = {'Authorization': f'Bearer {Config.API_KEY}'}
-    url = f"{Config.TICKETING_TOOL_API_URL}/{endpoint}"
+# Route for Gross Profit Score
+@app.route('/gross_profit_score', methods=['GET'])
+def gross_profit_score():
+    query = """
+    SELECT 
+      ( 
+        (SELECT SUM(credit_amount - debit_amount) 
+         FROM ledger_entries 
+         WHERE account_id IN (0, 3, 5, 7, 11, 16, 19, 31, 41, 69, 81, 82, 97, 141, 146, 170, 209, 281, 308) 
+         AND deleted_at IS NULL) 
+        - 
+        (SELECT SUM(debit_amount - credit_amount) 
+         FROM ledger_entries 
+         WHERE account_id IN (0, 3, 5, 7, 11, 16, 19, 31, 41, 69, 81, 82, 97, 141, 146, 170, 209, 281, 308) 
+         AND deleted_at IS NULL) 
+      ) AS Gross_profit_score;
+    """
+    return execute_query(query)
+
+# Route for Total Revenue
+@app.route('/total_revenue', methods=['GET'])
+def total_revenue():
+    query = """
+    SELECT 
+      (SELECT SUM(credit_amount - debit_amount) 
+       FROM ledger_entries 
+       WHERE account_id IN (0, 3, 5, 7, 11, 16, 19, 31, 41, 69, 81, 82, 97, 141, 146, 170, 209, 281, 308) 
+       AND deleted_at IS NULL) AS Total_revenue;
+    """
+    return execute_query(query)
+
+# Route for Gross Profit Margin
+@app.route('/gross_profit_margin', methods=['GET'])
+def gross_profit_margin():
+    query = """
+    SELECT 
+      (
+        (
+          (SELECT SUM(credit_amount - debit_amount) 
+           FROM ledger_entries 
+           WHERE account_id IN (0, 3, 5, 7, 11, 16, 19, 31, 41, 69, 81, 82, 97, 141, 146, 170, 209, 281, 308) 
+           AND deleted_at IS NULL) 
+          - 
+          (SELECT SUM(debit_amount - credit_amount) 
+           FROM ledger_entries 
+           WHERE account_id IN (0, 3, 5, 7, 11, 16, 19, 31, 41, 69, 81, 82, 97, 141, 146, 170, 209, 281, 308) 
+           AND deleted_at IS NULL)
+        ) 
+        / 
+        NULLIF((SELECT SUM(credit_amount - debit_amount) 
+                FROM ledger_entries 
+                WHERE account_id IN (0, 3, 5, 7, 11, 16, 19, 31, 41, 69, 81, 82, 97, 141, 146, 170, 209, 281, 308) 
+                AND deleted_at IS NULL), 0) 
+      ) * 100 AS Gross_profit_margin;
+    """
+    return execute_query(query)
+
+# Function to execute a query and return the result
+def execute_query(query):
+    # Create a connection to the database
+    connection = create_connection()
+    
+    if connection is None:
+        return jsonify({"error": "Failed to connect to the database"}), 500
+
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error querying Ticketing Tool API: {str(e)}")
-        return {'error': str(e)}
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(query)
+        result = cursor.fetchone()  # Use fetchone since we expect only one result
+        return jsonify(result)
+    except Error as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        connection.close()
 
-# Error handler for internal server errors
-@app.errorhandler(500)
-def internal_server_error(error):
-    logger.error(f"Internal Server Error: {str(error)}")
-    return jsonify({'error': 'Internal Server Error'}), 500
-
-# 1. Total Active Projects (cashflow and non-cashflow)
-@app.route('/projects/active', methods=['GET'])
-def get_active_projects():
-    data = query_kedebah_api('projects/active')
-    if 'error' in data:
-        return jsonify({'error': data['error']}), 500
-    return jsonify({'total_active_projects': data})
-
-# 2. Targets Vs Actual
-@app.route('/projects/targets-vs-actual', methods=['GET'])
-def get_targets_vs_actual():
-    data = query_kedebah_api('projects/targets-vs-actual')
-    if 'error' in data:
-        return jsonify({'error': data['error']}), 500
-    return jsonify({'targets_vs_actual': data})
-
-# 3. Timelines Vs Slippages
-@app.route('/projects/timelines-vs-slippages', methods=['GET'])
-def get_timelines_vs_slippages():
-    data = query_kedebah_api('projects/timelines-vs-slippages')
-    if 'error' in data:
-        return jsonify({'error': data['error']}), 500
-    return jsonify({'timelines_vs_slippages': data})
-
-# 4. Activity Output against Service Experience
-@app.route('/activity/output-vs-experience', methods=['GET'])
-def get_activity_output_vs_experience():
-    data = query_kedebah_api('activity/output-vs-experience')
-    if 'error' in data:
-        return jsonify({'error': data['error']}), 500
-    return jsonify({'activity_output_vs_experience': data})
-
-# 5. System Availability Score (from Ticketing tool)
-@app.route('/system/availability', methods=['GET'])
-def get_system_availability():
-    data = query_ticketing_tool_api('system/availability')
-    if 'error' in data:
-        return jsonify({'error': data['error']}), 500
-    return jsonify({'system_availability': data})
-
-# 6. Data Warehouse Availability (from Ticketing tool)
-@app.route('/data-warehouse/availability', methods=['GET'])
-def get_data_warehouse_availability():
-    data = query_ticketing_tool_api('data-warehouse/availability')
-    if 'error' in data:
-        return jsonify({'error': data['error']}), 500
-    return jsonify({'data_warehouse_availability': data})
-
-# 7. Server Response Score (from Ticketing tool)
-@app.route('/server/response-score', methods=['GET'])
-def get_server_response_score():
-    data = query_ticketing_tool_api('server/response-score')
-    if 'error' in data:
-        return jsonify({'error': data['error']}), 500
-    return jsonify({'server_response_score': data})
-
-# 8. Network Latency (from Ticketing tool)
-@app.route('/network/latency', methods=['GET'])
-def get_network_latency():
-    data = query_ticketing_tool_api('network/latency')
-    if 'error' in data:
-        return jsonify({'error': data['error']}), 500
-    return jsonify({'network_latency': data})
-
+# Main entry point for running the app
 if __name__ == '__main__':
-    app.run(debug=False)
+    app.run(debug=True, host='0.0.0.0', port=5000)
